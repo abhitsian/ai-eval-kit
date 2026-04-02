@@ -1,0 +1,112 @@
+# Example: Customer Support Chatbot
+# Copy this file to your project root and customize it.
+
+product:
+  name: "Acme Support Bot"
+  description: "AI chatbot for customer support — answers questions, resolves tickets, escalates to agents"
+  version: "1.0"
+
+# Define your AI surfaces — each distinct capability your AI has
+surfaces:
+  answer_quality:
+    description: "Accuracy and helpfulness of answers to customer questions"
+    threshold: 0.90
+    owner: "pm_name"
+    dimensions:
+      - factual_accuracy
+      - completeness
+      - no_hallucination
+      - actionability
+
+  intent_detection:
+    description: "Correctly identifying what the customer wants"
+    threshold: 0.92
+    owner: "pm_name"
+    dimensions:
+      - routing_accuracy
+
+  tone:
+    description: "Professional, empathetic, brand-appropriate communication"
+    threshold: 0.88
+    owner: "pm_name"
+    dimensions:
+      - tone_appropriateness
+      - sensitivity
+
+  escalation:
+    description: "Knowing when to hand off to a human agent"
+    threshold: 0.95
+    owner: "pm_name"
+    dimensions:
+      - escalation_accuracy
+
+  tool_use:
+    description: "Correctly using internal tools (order lookup, refund, ticket creation)"
+    threshold: 0.90
+    owner: "pm_name"
+    dimensions:
+      - tool_selection
+      - parameter_accuracy
+
+# Failure modes specific to your product
+failure_modes:
+  - id: hallucination
+    label: "Hallucination"
+    severity: critical
+    description: "AI fabricates information not in any source"
+
+  - id: wrong_intent
+    label: "Wrong Intent"
+    severity: high
+    description: "Misclassifies what the customer wants"
+
+  - id: missed_escalation
+    label: "Missed Escalation"
+    severity: critical
+    description: "Should have handed to human but didn't"
+
+  - id: false_escalation
+    label: "False Escalation"
+    severity: medium
+    description: "Escalated when it could have resolved itself"
+
+  - id: wrong_tool
+    label: "Wrong Tool"
+    severity: high
+    description: "Called the wrong internal tool or wrong parameters"
+
+  - id: tone_mismatch
+    label: "Tone Mismatch"
+    severity: medium
+    description: "Inappropriate tone for the situation"
+
+  - id: incomplete
+    label: "Incomplete Answer"
+    severity: medium
+    description: "Correct direction but missing key info"
+
+  - id: over_promise
+    label: "Over-Promise"
+    severity: high
+    description: "Promises something the company can't deliver"
+
+# LLM settings for judges and generation
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  temperature: 0.0
+
+# Runner settings
+runner:
+  trials: 3
+  timeout_seconds: 30
+  parallel_workers: 4
+
+# Team
+team:
+  - name: "PM Name"
+    role: "Product Manager"
+    surfaces: [answer_quality, intent_detection]
+  - name: "QA Lead"
+    role: "Quality Lead"
+    surfaces: [tone, escalation, tool_use]

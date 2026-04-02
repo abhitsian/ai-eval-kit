@@ -1,0 +1,87 @@
+# Example: AI-Powered Enterprise Search
+# An AI search product that retrieves and synthesizes answers from internal docs.
+
+product:
+  name: "DocSearch AI"
+  description: "Enterprise search with AI-generated answers from internal knowledge bases"
+  version: "1.0"
+
+surfaces:
+  retrieval:
+    description: "Finding the right documents for a query"
+    threshold: 0.90
+    owner: "search_pm"
+    dimensions:
+      - recall
+      - precision
+      - relevance_ranking
+
+  answer_generation:
+    description: "Synthesizing accurate answers from retrieved documents"
+    threshold: 0.95
+    owner: "ai_pm"
+    dimensions:
+      - factual_accuracy
+      - groundedness
+      - no_hallucination
+      - completeness
+
+  citation:
+    description: "Properly citing sources in generated answers"
+    threshold: 0.92
+    owner: "ai_pm"
+    dimensions:
+      - citation_accuracy
+      - source_traceability
+
+  query_understanding:
+    description: "Interpreting ambiguous or complex queries correctly"
+    threshold: 0.85
+    owner: "search_pm"
+    dimensions:
+      - intent_detection
+      - entity_recognition
+      - disambiguation
+
+  access_control:
+    description: "Respecting document permissions — never showing unauthorized content"
+    threshold: 0.99
+    owner: "security_pm"
+    dimensions:
+      - permission_compliance
+
+failure_modes:
+  - id: hallucination
+    label: "Hallucination"
+    severity: critical
+    description: "Answer contains info not in any retrieved document"
+  - id: wrong_source
+    label: "Wrong Source"
+    severity: high
+    description: "Cites incorrect or irrelevant document"
+  - id: missed_doc
+    label: "Missed Document"
+    severity: high
+    description: "Relevant document exists but wasn't retrieved"
+  - id: stale_answer
+    label: "Stale Answer"
+    severity: high
+    description: "Uses outdated document when newer version exists"
+  - id: permission_leak
+    label: "Permission Leak"
+    severity: critical
+    description: "Shows content user shouldn't have access to"
+  - id: incomplete
+    label: "Incomplete"
+    severity: medium
+    description: "Correct but missing key information from sources"
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  temperature: 0.0
+
+runner:
+  trials: 3
+  timeout_seconds: 30
+  parallel_workers: 4

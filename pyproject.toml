@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ai-eval-kit"
+version = "0.1.0"
+description = "Evaluation toolkit for PMs building AI products. Config-driven evals, trace viewer, labeling, dashboard."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "streamlit>=1.30.0",
+    "pandas>=2.0.0",
+    "pyyaml>=6.0",
+    "anthropic>=0.40.0",
+    "plotly>=5.18.0",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+dev = ["pytest>=7.0", "ruff>=0.1.0"]
+
+[project.scripts]
+evalkit = "evalkit.cli:main"
+
+[tool.ruff]
+line-length = 100
