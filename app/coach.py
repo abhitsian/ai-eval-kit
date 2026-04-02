@@ -33,7 +33,14 @@ SKILL_DESCRIPTIONS = {
     "calibration": "Align your judgment",
     "eval_coverage": "Audit completeness",
 }
-DIFF_LABELS = {"easy": "Warm-up", "medium": "Standard", "hard": "Advanced"}
+DIFF_LABELS = {"easy": "Warm-up", "medium": "Standard", "hard": "Advanced", "expert": "Expert"}
+DIFF_FROM_SLIDER = {1: "easy", 2: "easy", 3: "medium", 4: "hard", 5: "expert"}
+GAME_MODES = {
+    "standard": {"label": "Standard", "desc": "Pick your skill and difficulty, take your time."},
+    "rapid": {"label": "Rapid Fire", "desc": "Same skill, 5 in a row. Build your combo."},
+    "gauntlet": {"label": "Gauntlet", "desc": "All 6 skills, random order. Can you clear them all?"},
+    "boss": {"label": "Boss Round", "desc": "One hard challenge. High stakes, big XP."},
+}
 BADGE_META = {
     "first_blood": ("First Rep", "Completed your first exercise"),
     "getting_started": ("Ten Deep", "Completed 10 exercises"),
@@ -270,7 +277,7 @@ def _sidebar(profile):
     c2.metric("XP", f"{profile.overall_xp:,}")
 
     c3, c4 = sb.columns(2)
-    c3.metric("Sessions", profile._data.get("total_sessions", 0))
+    c3.metric("Combo", f"{profile.combo}")
     c4.metric("Streak", f"{profile._data.get('streak_days', 0)}d")
 
     # Compact skill bars
@@ -310,71 +317,329 @@ def _training_tab(profile):
     recs = recommend_next(profile, 3)
     recommended_skill = recs[0]["skill"] if recs else "failure_spotting"
 
+    # Initialize game state
+    if "game_mode" not in st.session_state:
+        st.session_state.game_mode = "standard"
+    if "rapid_count" not in st.session_state:
+        st.session_state.rapid_count = 0
+    if "gauntlet_skills" not in st.session_state:
+        st.session_state.gauntlet_skills = []
+
     sim = st.session_state.current_sim
 
     if sim is None:
-        # No active challenge — show launcher
-        st.markdown("## Ready to train")
+        _render_launcher(profile, recs, recommended_skill)
+    else:
+        _render_challenge(sim, profile)
 
-        # Recommendation callout
-        if recs:
-            r = recs[0]
+
+def _render_launcher(profile, recs, recommended_skill):
+    # ── Session stats bar ──
+    combo = profile.combo
+    session_correct = profile._data.get("session_correct", 0)
+    session_total = profile._data.get("session_total", 0)
+    best_combo = profile.best_combo
+
+    if session_total > 0 or combo > 0:
+        combo_color = "#C45D3E" if combo >= 3 else "#B8860B" if combo >= 1 else "#9C9590"
+        multiplier = "2x" if combo >= 5 else "1.5x" if combo >= 3 else "1x"
+        st.markdown(f"""
+        <div style="display:flex; gap:24px; align-items:center; padding:12px 0 16px; border-bottom:1px solid #E5E0DB; margin-bottom:20px;">
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase; letter-spacing:0.08em;">Combo</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1.3rem; font-weight:700; color:{combo_color}; margin-left:8px;">{combo}</span>
+                <span style="font-family:'DM Mono',monospace; font-size:0.72rem; color:{combo_color}; margin-left:4px;">{multiplier} xp</span>
+            </div>
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase; letter-spacing:0.08em;">Session</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1rem; color:#1A1714; margin-left:8px;">{session_correct}/{session_total}</span>
+            </div>
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase; letter-spacing:0.08em;">Best combo</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1rem; color:#1A1714; margin-left:8px;">{best_combo}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── Game mode selector ──
+    st.markdown("## Pick your mode")
+
+    mode_cols = st.columns(4)
+    current_mode = st.session_state.game_mode
+    for i, (mode_id, mode) in enumerate(GAME_MODES.items()):
+        with mode_cols[i]:
+            is_active = mode_id == current_mode
+            bg = "#1A1714" if is_active else "#FFFFFF"
+            text_c = "#FAF8F5" if is_active else "#1A1714"
+            desc_c = "#9C9590" if is_active else "#6B6560"
+            border = "#1A1714" if is_active else "#E5E0DB"
             st.markdown(f"""
-            <div style="background:#FCEEE8; border-left:3px solid #C45D3E; padding:14px 18px; border-radius:0 6px 6px 0; margin-bottom:24px;">
-                <p style="margin:0; font-size:0.85rem; color:#1A1714;">
-                    <strong>Recommended:</strong> {r['skill_label']} ({r['difficulty']}) — {r['reason']}
-                </p>
+            <div style="border:1px solid {border}; background:{bg}; border-radius:8px; padding:14px 16px; text-align:center; min-height:90px; cursor:pointer;">
+                <p style="font-weight:600; font-size:0.92rem; color:{text_c}; margin:0 0 4px;">{mode['label']}</p>
+                <p style="font-size:0.75rem; color:{desc_c}; margin:0; line-height:1.4;">{mode['desc']}</p>
             </div>
             """, unsafe_allow_html=True)
+            if st.button("Select" if not is_active else "Selected", key=f"mode_{mode_id}", use_container_width=True, disabled=is_active):
+                st.session_state.game_mode = mode_id
+                st.rerun()
 
-        # Skill + product selector
-        skill_options = list(SKILLS)
-        if recommended_skill in skill_options:
-            skill_options.remove(recommended_skill)
-            skill_options.insert(0, recommended_skill)
+    st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
 
-        c1, c2 = st.columns([3, 2])
-        with c1:
-            skill = st.selectbox(
-                "Skill",
-                skill_options,
-                format_func=lambda x: f"{SKILL_LABELS[x]}  —  {SKILL_DESCRIPTIONS[x]}  ({profile.skill_level(x)}%)",
-            )
-        with c2:
-            product_type = st.selectbox(
-                "Product context",
-                ["auto"] + list(PRODUCT_TYPES.keys()),
-                format_func=lambda x: "Varies automatically" if x == "auto" else PRODUCT_TYPES[x]["name"],
-            )
+    # ── Configuration panel ──
+    mode = st.session_state.game_mode
 
-        if st.button("Generate challenge", type="primary"):
+    if mode == "standard":
+        _launcher_standard(profile, recs, recommended_skill)
+    elif mode == "rapid":
+        _launcher_rapid(profile, recommended_skill)
+    elif mode == "gauntlet":
+        _launcher_gauntlet(profile)
+    elif mode == "boss":
+        _launcher_boss(profile)
+
+
+def _launcher_standard(profile, recs, recommended_skill):
+    # Recommendation
+    if recs:
+        r = recs[0]
+        st.markdown(f"""
+        <div style="background:#FCEEE8; border-left:3px solid #C45D3E; padding:12px 16px; border-radius:0 6px 6px 0; margin-bottom:20px;">
+            <p style="margin:0; font-size:0.85rem; color:#1A1714;">
+                <strong>Recommended:</strong> {r['skill_label']} — {r['reason']}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    skill_options = list(SKILLS)
+    if recommended_skill in skill_options:
+        skill_options.remove(recommended_skill)
+        skill_options.insert(0, recommended_skill)
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        skill = st.selectbox(
+            "Skill",
+            skill_options,
+            format_func=lambda x: f"{SKILL_LABELS[x]}  —  {SKILL_DESCRIPTIONS[x]}  ({profile.skill_level(x)}%)",
+        )
+    with c2:
+        product_type = st.selectbox(
+            "Product context",
+            ["auto"] + list(PRODUCT_TYPES.keys()),
+            format_func=lambda x: "Varies automatically" if x == "auto" else PRODUCT_TYPES[x]["name"],
+        )
+
+    # ── Difficulty dial ──
+    st.markdown("""
+    <p style="font-size:0.78rem; color:#9C9590; text-transform:uppercase; letter-spacing:0.08em; margin:16px 0 4px;">Difficulty</p>
+    """, unsafe_allow_html=True)
+
+    diff_val = st.slider(
+        "diff", min_value=1, max_value=5, value=3,
+        format="%d", label_visibility="collapsed", key="diff_slider",
+    )
+    diff_override = DIFF_FROM_SLIDER[diff_val]
+    diff_label = DIFF_LABELS[diff_override]
+    diff_xp = {1: "5-10", 2: "8-12", 3: "15-20", 4: "25-35", 5: "40-50"}[diff_val]
+
+    # Difficulty label strip
+    diff_color = {"easy": "#2D8659", "medium": "#B8860B", "hard": "#C44B4B", "expert": "#8B2252"}.get(diff_override, "#6B6560")
+    labels_html = ""
+    for pos, (val, label) in enumerate([(1, "Warm-up"), (3, "Standard"), (4, "Advanced"), (5, "Expert")]):
+        active = DIFF_FROM_SLIDER.get(diff_val) == DIFF_FROM_SLIDER.get(val)
+        c = diff_color if active else "#D5CFC9"
+        labels_html += f'<span style="font-size:0.72rem; color:{c}; font-family:\'DM Mono\',monospace;">{label}</span>'
+        if pos < 3:
+            labels_html += '<span style="flex:1;"></span>'
+
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; margin:-8px 0 8px;">
+        {labels_html}
+    </div>
+    <p style="font-size:0.78rem; color:#6B6560; margin:0 0 20px;">
+        <strong style="color:{diff_color};">{diff_label}</strong> &mdash; {diff_xp} xp per challenge
+        {'&mdash; XP multiplier active for combos 3+ and 5+' if diff_val >= 3 else ''}
+    </p>
+    """, unsafe_allow_html=True)
+
+    if st.button("Generate challenge", type="primary"):
+        with st.spinner("Generating..."):
+            pt = None if product_type == "auto" else product_type
+            new_sim = generate_simulation(skill, profile, pt, difficulty_override=diff_override)
+            st.session_state.current_sim = new_sim
+            st.session_state.show_result = None
+            if not st.session_state.session_id:
+                st.session_state.session_id = profile.start_session()
+        st.rerun()
+
+
+def _launcher_rapid(profile, recommended_skill):
+    st.markdown("5 challenges, same skill, build your combo. Streak bonus XP at the end.")
+
+    skill_options = list(SKILLS)
+    if recommended_skill in skill_options:
+        skill_options.remove(recommended_skill)
+        skill_options.insert(0, recommended_skill)
+
+    skill = st.selectbox(
+        "Skill for rapid fire",
+        skill_options,
+        format_func=lambda x: f"{SKILL_LABELS[x]} ({profile.skill_level(x)}%)",
+        key="rapid_skill",
+    )
+
+    diff_val = st.slider("Difficulty", min_value=1, max_value=5, value=3, key="rapid_diff")
+
+    count = st.session_state.rapid_count
+    st.markdown(f"""
+    <div style="display:flex; gap:8px; margin:12px 0;">
+        {''.join(f'<div style="width:36px; height:4px; background:{"#2D8659" if i < count else "#E5E0DB"}; border-radius:2px;"></div>' for i in range(5))}
+    </div>
+    <p style="font-size:0.82rem; color:#9C9590;">{count}/5 completed</p>
+    """, unsafe_allow_html=True)
+
+    if count >= 5:
+        st.markdown("""
+        <div style="background:#E8F5EE; padding:16px; border-radius:8px; text-align:center;">
+            <p style="font-size:1.1rem; font-weight:600; color:#2D8659; margin:0;">Rapid Fire Complete!</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("New round", type="primary"):
+            st.session_state.rapid_count = 0
+            st.rerun()
+    else:
+        if st.button(f"Challenge {count + 1} of 5", type="primary"):
             with st.spinner("Generating..."):
-                pt = None if product_type == "auto" else product_type
-                new_sim = generate_simulation(skill, profile, pt)
+                diff_override = DIFF_FROM_SLIDER[diff_val]
+                new_sim = generate_simulation(skill, profile, difficulty_override=diff_override)
+                new_sim["_rapid_mode"] = True
                 st.session_state.current_sim = new_sim
                 st.session_state.show_result = None
                 if not st.session_state.session_id:
                     st.session_state.session_id = profile.start_session()
             st.rerun()
 
+
+def _launcher_gauntlet(profile):
+    st.markdown("One challenge per skill, random order. Clear all 6 to complete the gauntlet.")
+
+    diff_val = st.slider("Difficulty", min_value=1, max_value=5, value=3, key="gauntlet_diff")
+
+    if not st.session_state.gauntlet_skills:
+        import random
+        order = list(SKILLS)
+        random.shuffle(order)
+        st.session_state.gauntlet_skills = order
+
+    remaining = st.session_state.gauntlet_skills
+    completed = 6 - len(remaining)
+
+    # Progress dots
+    st.markdown(f"""
+    <div style="display:flex; gap:6px; margin:12px 0 4px;">
+        {''.join(f'<div style="width:40px; height:4px; background:{"#2D8659" if i < completed else "#E5E0DB"}; border-radius:2px;"></div>' for i in range(6))}
+    </div>
+    <p style="font-size:0.82rem; color:#9C9590;">{completed}/6 skills cleared</p>
+    """, unsafe_allow_html=True)
+
+    if not remaining:
+        st.markdown("""
+        <div style="background:#E8F5EE; padding:20px; border-radius:8px; text-align:center;">
+            <p style="font-size:1.2rem; font-weight:700; color:#2D8659; margin:0 0 4px;">Gauntlet Complete!</p>
+            <p style="font-size:0.88rem; color:#6B6560; margin:0;">You cleared all 6 skills. Impressive.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("New gauntlet", type="primary"):
+            st.session_state.gauntlet_skills = []
+            st.rerun()
     else:
-        # Active challenge
-        _render_challenge(sim, profile)
+        next_skill = remaining[0]
+        st.markdown(f"**Next up:** {SKILL_LABELS[next_skill]} — {SKILL_DESCRIPTIONS[next_skill]}")
+        if st.button(f"Start: {SKILL_LABELS[next_skill]}", type="primary"):
+            with st.spinner("Generating..."):
+                diff_override = DIFF_FROM_SLIDER[diff_val]
+                new_sim = generate_simulation(next_skill, profile, difficulty_override=diff_override)
+                new_sim["_gauntlet_mode"] = True
+                st.session_state.current_sim = new_sim
+                st.session_state.show_result = None
+                if not st.session_state.session_id:
+                    st.session_state.session_id = profile.start_session()
+            st.rerun()
+
+
+def _launcher_boss(profile):
+    st.markdown("One challenge. Maximum difficulty. Triple XP if you nail it.")
+
+    skill = st.selectbox(
+        "Skill",
+        list(SKILLS),
+        format_func=lambda x: f"{SKILL_LABELS[x]} ({profile.skill_level(x)}%)",
+        key="boss_skill",
+    )
+    product_type = st.selectbox(
+        "Product",
+        ["auto"] + list(PRODUCT_TYPES.keys()),
+        format_func=lambda x: "Random" if x == "auto" else PRODUCT_TYPES[x]["name"],
+        key="boss_product",
+    )
+
+    st.markdown(f"""
+    <div style="background:#FCEAEA; border:1px solid #C44B4B; border-radius:8px; padding:16px; text-align:center; margin:12px 0;">
+        <p style="font-family:'DM Mono',monospace; font-size:0.82rem; color:#C44B4B; margin:0 0 4px;">BOSS ROUND</p>
+        <p style="font-size:0.88rem; color:#1A1714; margin:0;">Expert difficulty &mdash; 3x XP multiplier &mdash; no second chances</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("Begin boss round", type="primary"):
+        with st.spinner("Generating boss challenge..."):
+            pt = None if product_type == "auto" else product_type
+            new_sim = generate_simulation(skill, profile, pt, difficulty_override="expert")
+            new_sim["_boss_mode"] = True
+            new_sim["xp_value"] = new_sim.get("xp_value", 35) * 3
+            st.session_state.current_sim = new_sim
+            st.session_state.show_result = None
+            if not st.session_state.session_id:
+                st.session_state.session_id = profile.start_session()
+        st.rerun()
 
 
 def _render_challenge(sim, profile):
     skill = sim["skill"]
     diff = sim.get("difficulty", "medium")
     result = st.session_state.show_result
+    combo = profile.combo
+    is_boss = sim.get("_boss_mode", False)
+    is_rapid = sim.get("_rapid_mode", False)
+
+    # Mode badge
+    mode_badge = ""
+    if is_boss:
+        mode_badge = '<span style="font-family:\'DM Mono\',monospace; font-size:0.68rem; color:#C44B4B; background:#FCEAEA; padding:2px 8px; border-radius:3px; margin-right:8px;">BOSS</span>'
+    elif is_rapid:
+        rapid_n = st.session_state.get("rapid_count", 0) + 1
+        mode_badge = f'<span style="font-family:\'DM Mono\',monospace; font-size:0.68rem; color:#B8860B; background:#FFF8E6; padding:2px 8px; border-radius:3px; margin-right:8px;">RAPID {rapid_n}/5</span>'
+    elif sim.get("_gauntlet_mode"):
+        done = 6 - len(st.session_state.get("gauntlet_skills", []))
+        mode_badge = f'<span style="font-family:\'DM Mono\',monospace; font-size:0.68rem; color:#2D8659; background:#E8F5EE; padding:2px 8px; border-radius:3px; margin-right:8px;">GAUNTLET {done + 1}/6</span>'
+
+    # Combo indicator
+    combo_html = ""
+    if combo >= 3:
+        combo_color = "#C45D3E" if combo >= 5 else "#B8860B"
+        combo_html = f'<span style="font-family:\'DM Mono\',monospace; font-size:0.72rem; color:{combo_color};">{combo} combo</span>'
 
     # Challenge header strip
-    diff_color = {"easy": "#2D8659", "medium": "#B8860B", "hard": "#C44B4B"}.get(diff, "#6B6560")
+    diff_color = {"easy": "#2D8659", "medium": "#B8860B", "hard": "#C44B4B", "expert": "#8B2252"}.get(diff, "#6B6560")
     st.markdown(f"""
-    <div style="display:flex; align-items:center; gap:16px; padding:10px 0 16px; border-bottom:1px solid #E5E0DB; margin-bottom:20px;">
+    <div style="display:flex; align-items:center; gap:12px; padding:10px 0 16px; border-bottom:1px solid #E5E0DB; margin-bottom:20px; flex-wrap:wrap;">
+        {mode_badge}
         <span style="font-family:'DM Mono',monospace; font-size:0.72rem; font-weight:500; color:{diff_color}; text-transform:uppercase; letter-spacing:0.08em; border:1px solid {diff_color}; padding:3px 10px; border-radius:3px;">{DIFF_LABELS.get(diff, diff)}</span>
         <span style="font-size:0.92rem; font-weight:600; color:#1A1714;">{SKILL_LABELS[skill]}</span>
         <span style="font-size:0.82rem; color:#9C9590;">{sim.get('product_name', '')}</span>
-        <span style="margin-left:auto; font-family:'DM Mono',monospace; font-size:0.78rem; color:#9C9590;">+{sim.get('xp_value', 15)} xp</span>
+        <span style="margin-left:auto; display:flex; gap:12px; align-items:center;">
+            {combo_html}
+            <span style="font-family:'DM Mono',monospace; font-size:0.78rem; color:#9C9590;">+{sim.get('xp_value', 15)} xp</span>
+        </span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -616,7 +881,46 @@ def _render_result(sim, result, profile):
         </div>
         """, unsafe_allow_html=True)
 
-    if st.button("Next challenge", type="primary"):
+    # Handle game mode transitions
+    is_rapid = sim.get("_rapid_mode")
+    is_gauntlet = sim.get("_gauntlet_mode")
+    is_boss = sim.get("_boss_mode")
+
+    if is_rapid:
+        if result.get("correct"):
+            st.session_state.rapid_count = st.session_state.get("rapid_count", 0) + 1
+        btn_label = f"Next ({st.session_state.rapid_count}/5)" if st.session_state.rapid_count < 5 else "Finish round"
+    elif is_gauntlet:
+        if result.get("correct") and st.session_state.gauntlet_skills:
+            st.session_state.gauntlet_skills.pop(0)
+        remaining = len(st.session_state.gauntlet_skills)
+        btn_label = f"Next skill ({6 - remaining}/6)" if remaining > 0 else "Gauntlet complete"
+    elif is_boss:
+        btn_label = "Back to modes"
+    else:
+        btn_label = "Next challenge"
+
+    # Combo celebration
+    combo = profile.combo
+    if combo >= 5 and result.get("correct"):
+        st.markdown(f"""
+        <div style="text-align:center; padding:12px; margin:8px 0;">
+            <span style="font-family:'DM Mono',monospace; font-size:1.6rem; font-weight:700; color:#C45D3E;">
+                {combo} COMBO
+            </span>
+            <span style="font-family:'DM Mono',monospace; font-size:0.82rem; color:#C45D3E; margin-left:8px;">2x XP</span>
+        </div>
+        """, unsafe_allow_html=True)
+    elif combo >= 3 and result.get("correct"):
+        st.markdown(f"""
+        <div style="text-align:center; padding:8px; margin:8px 0;">
+            <span style="font-family:'DM Mono',monospace; font-size:1.2rem; font-weight:600; color:#B8860B;">
+                {combo} combo &mdash; 1.5x XP
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    if st.button(btn_label, type="primary"):
         st.session_state.current_sim = None
         st.session_state.show_result = None
         st.rerun()

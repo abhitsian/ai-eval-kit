@@ -73,6 +73,10 @@ class UserProfile:
             "unlocked_badges": [],
             "preferred_difficulty": "adaptive",  # adaptive, easy, medium, hard
             "preferred_product_types": [],  # chatbot, search, agent, etc.
+            "combo": 0,  # consecutive correct answers
+            "best_combo": 0,
+            "session_correct": 0,  # current session running total
+            "session_total": 0,
         }
 
     def save(self):
@@ -142,13 +146,37 @@ class UserProfile:
 
     # --- Recording Results ---
 
+    @property
+    def combo(self) -> int:
+        return self._data.get("combo", 0)
+
+    @property
+    def best_combo(self) -> int:
+        return self._data.get("best_combo", 0)
+
     def record_answer(self, skill: str, correct: bool, difficulty: str, xp_earned: int, details: Dict = None):
         """Record a single answer result and update skill levels."""
         s = self._data["skills"].setdefault(skill, {"level": 0, "xp": 0, "correct": 0, "total": 0})
         s["total"] += 1
-        s["xp"] += xp_earned
+
+        # Combo tracking
         if correct:
             s["correct"] += 1
+            self._data["combo"] = self._data.get("combo", 0) + 1
+            self._data["best_combo"] = max(self._data.get("best_combo", 0), self._data["combo"])
+            self._data["session_correct"] = self._data.get("session_correct", 0) + 1
+        else:
+            self._data["combo"] = 0
+        self._data["session_total"] = self._data.get("session_total", 0) + 1
+
+        # XP multiplier from combo
+        combo = self._data.get("combo", 0)
+        if combo >= 5:
+            xp_earned = int(xp_earned * 2.0)
+        elif combo >= 3:
+            xp_earned = int(xp_earned * 1.5)
+
+        s["xp"] += xp_earned
 
         # Update skill level (0-100 based on accuracy with minimum attempts)
         if s["total"] >= 3:

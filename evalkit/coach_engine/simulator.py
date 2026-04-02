@@ -51,6 +51,7 @@ def generate_simulation(
     skill: str,
     profile: UserProfile,
     product_type: Optional[str] = None,
+    difficulty_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate a single simulation challenge adapted to the user's level."""
 
@@ -66,14 +67,17 @@ def generate_simulation(
 
     product = PRODUCT_TYPES.get(product_type, PRODUCT_TYPES["chatbot"])
 
-    # Determine difficulty based on skill level
-    level = profile.skill_level(skill)
-    if level >= 70:
-        difficulty = "hard"
-    elif level >= 40:
-        difficulty = "medium"
+    # Determine difficulty
+    if difficulty_override:
+        difficulty = difficulty_override
     else:
-        difficulty = "easy"
+        level = profile.skill_level(skill)
+        if level >= 70:
+            difficulty = "hard"
+        elif level >= 40:
+            difficulty = "medium"
+        else:
+            difficulty = "easy"
 
     # Get user context for personalization
     user_context = ""
