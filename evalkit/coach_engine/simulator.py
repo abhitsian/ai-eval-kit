@@ -277,18 +277,60 @@ Return ONLY the JSON object."""
 
 
 def _call_claude(prompt: str) -> str:
+    """Call Claude via Claude Code CLI (uses existing auth) or fall back to API."""
+    # Try Claude Code CLI first
+    result = _call_claude_cli(prompt)
+    if result:
+        return result
+
+    # Fall back to API if CLI not available
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2048,
+                temperature=0.9,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except Exception as e:
+            raise RuntimeError(f"API fallback failed: {e}")
+
+    raise RuntimeError(
+        "No Claude backend available. Either:\n"
+        "  1. Install Claude Code CLI (claude) — it will use your existing auth\n"
+        "  2. Set ANTHROPIC_API_KEY in your environment"
+    )
+
+
+def _call_claude_cli(prompt: str) -> Optional[str]:
+    """Call Claude via the Claude Code CLI subprocess."""
+    import subprocess
+    import shutil
+
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        # Check common locations
+        for path in ["/Users/vaibhav/.local/bin/claude", "/usr/local/bin/claude", "/opt/homebrew/bin/claude"]:
+            if os.path.isfile(path):
+                claude_path = path
+                break
+    if not claude_path:
+        return None
+
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            temperature=0.9,  # High temp for variety
-            messages=[{"role": "user", "content": prompt}],
+        result = subprocess.run(
+            [claude_path, "-p", prompt, "--output-format", "text"],
+            capture_output=True, text=True, timeout=60,
         )
-        return response.content[0].text
-    except Exception as e:
-        raise RuntimeError(f"Claude API error: {e}. Set ANTHROPIC_API_KEY in your environment.")
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
 
 
 def _parse_simulation(raw: str, skill: str) -> Dict[str, Any]:

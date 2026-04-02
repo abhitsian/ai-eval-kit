@@ -202,18 +202,44 @@ Respond in JSON:
 
 
 def _call_claude(prompt: str) -> str:
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            temperature=0.0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
-    except Exception as e:
-        raise RuntimeError(f"Claude API error: {e}")
+    """Call Claude via CLI (uses existing Claude Code auth) or fall back to API."""
+    import subprocess
+    import shutil
+
+    # Try Claude Code CLI first
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        for path in ["/Users/vaibhav/.local/bin/claude", "/usr/local/bin/claude", "/opt/homebrew/bin/claude"]:
+            if os.path.isfile(path):
+                claude_path = path
+                break
+
+    if claude_path:
+        try:
+            result = subprocess.run(
+                [claude_path, "-p", prompt, "--output-format", "text"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+    # Fall back to API
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model="claude-sonnet-4-6", max_tokens=1024, temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except Exception as e:
+            raise RuntimeError(f"Both CLI and API failed: {e}")
+
+    raise RuntimeError("No Claude backend. Install Claude Code CLI or set ANTHROPIC_API_KEY.")
 
 
 def _parse_evaluation(raw: str) -> Dict[str, Any]:
