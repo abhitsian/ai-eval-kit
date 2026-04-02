@@ -240,5 +240,70 @@ def dashboard(port):
     subprocess.run(["python3", "-m", "streamlit", "run", str(app_path), "--server.port", str(port)])
 
 
+# ============================================================
+# evalkit practice
+# ============================================================
+
+@main.command()
+@click.option("--port", default=8503, type=int)
+def practice(port):
+    """Launch the eval practice mode — interactive training for PMs."""
+    import subprocess
+    app_path = Path(__file__).parent.parent / "app" / "practice.py"
+    click.echo(f"Launching practice mode on port {port}...")
+    click.echo("Four skill tracks: Spot the Failure, Write the Eval, Define the Rubric, Calibration")
+    subprocess.run(["python3", "-m", "streamlit", "run", str(app_path), "--server.port", str(port)])
+
+
+# ============================================================
+# evalkit coach
+# ============================================================
+
+@main.command()
+@click.argument("surface")
+@click.argument("feature")
+@click.option("--quick", is_flag=True, help="Quick local analysis (no LLM needed)")
+@click.option("--config", "config_path", default=None)
+def coach(surface, feature, quick, config_path):
+    """Review your eval file and get improvement suggestions.
+
+    Example: evalkit coach answer_quality starter
+    """
+    config = _load_config(config_path)
+    yaml_path = config.evals_dir / surface / f"{feature}.yaml"
+
+    if not yaml_path.exists():
+        click.echo(f"File not found: {yaml_path}", err=True)
+        sys.exit(1)
+
+    import yaml as _yaml
+    with open(yaml_path) as f:
+        data = _yaml.safe_load(f)
+    tasks = data.get("tasks", [])
+
+    from evalkit.coach import quick_check, review_eval_file
+
+    # Always run quick check first
+    click.echo(f"\nReviewing: {yaml_path}\n")
+    result = quick_check(tasks)
+
+    click.echo(f"Tasks: {result['total_tasks']} | Negative cases: {result['negative_count']} | Grade: {result['grade']}")
+    click.echo()
+
+    if result["issues"]:
+        for issue in result["issues"]:
+            icon = {"high": "!!!", "medium": " ! ", "low": "   "}.get(issue["severity"], "   ")
+            click.echo(f"  [{icon}] {issue['message']}")
+        click.echo()
+
+    if not quick:
+        click.echo("Running LLM coach review...\n")
+        product_context = f"{config.product_name}: {config.product_description}"
+        review = review_eval_file(yaml_path, product_context)
+        click.echo(review)
+    else:
+        click.echo("(Use without --quick for detailed LLM-powered review)")
+
+
 if __name__ == "__main__":
     main()
