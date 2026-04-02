@@ -305,5 +305,44 @@ def coach(surface, feature, quick, config_path):
         click.echo("(Use without --quick for detailed LLM-powered review)")
 
 
+# ============================================================
+# evalkit learn — the adaptive coaching experience
+# ============================================================
+
+@main.command()
+@click.option("--port", default=8504, type=int)
+def learn(port):
+    """Launch the adaptive eval coach — personalized training powered by Claude."""
+    import subprocess
+    app_path = Path(__file__).parent.parent / "app" / "coach.py"
+    click.echo(f"Launching Eval Coach on port {port}...")
+    click.echo("Your progress is saved to ~/.evalkit/coach/")
+    subprocess.run(["python3", "-m", "streamlit", "run", str(app_path), "--server.port", str(port)])
+
+
+@main.command()
+@click.option("--user", "-u", default="default", help="User profile ID")
+def profile(user):
+    """Show your coaching profile and skill levels."""
+    from evalkit.coach_engine.profile import UserProfile, SKILL_LABELS
+    p = UserProfile(user)
+    summary = p.summary()
+
+    click.echo(f"\n{summary['display_name']} — {summary['overall_level'].title()}")
+    click.echo(f"XP: {summary['overall_xp']} | Sessions: {summary['total_sessions']} | "
+               f"Streak: {summary['streak_days']}d | Questions: {summary['total_questions']}")
+    click.echo()
+
+    click.echo("Skills:")
+    for sk, data in summary["skills"].items():
+        bar = "#" * (data["level"] // 5) + "." * (20 - data["level"] // 5)
+        click.echo(f"  {SKILL_LABELS[sk]:25s} [{bar}] {data['level']:3d}%  ({data['accuracy']}, {data['attempts']} attempts)")
+
+    if summary["weak_areas"]:
+        click.echo(f"\nFocus areas: {', '.join(SKILL_LABELS[sk] for sk in summary['weak_areas'])}")
+    if summary["badges"]:
+        click.echo(f"Badges: {', '.join(summary['badges'])}")
+
+
 if __name__ == "__main__":
     main()
