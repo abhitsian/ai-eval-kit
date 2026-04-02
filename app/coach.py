@@ -17,6 +17,10 @@ from evalkit.coach_engine.profile import UserProfile, SKILLS, SKILL_LABELS, LEVE
 from evalkit.coach_engine.simulator import generate_simulation, PRODUCT_TYPES
 from evalkit.coach_engine.evaluator import evaluate_answer
 from evalkit.coach_engine.pathway import recommend_next, suggest_session_plan, get_milestone_message
+from evalkit.coach_engine.campaign import (
+    CAMPAIGN_WEEKS, get_campaign_state, get_current_week,
+    can_advance, advance_week, record_campaign_answer,
+)
 
 # ─── Skill metadata ───
 
@@ -201,10 +205,14 @@ def main():
         return
 
     _sidebar(profile)
-    tab_train, tab_progress, tab_path = st.tabs(["Train", "Progress", "Path"])
+    tab_train, tab_campaign, tab_daily, tab_progress, tab_path = st.tabs(["Train", "Campaign", "Daily", "Progress", "Path"])
 
     with tab_train:
         _training_tab(profile)
+    with tab_campaign:
+        _campaign_tab(profile)
+    with tab_daily:
+        _daily_tab(profile)
     with tab_progress:
         _progress_tab(profile)
     with tab_path:
@@ -782,6 +790,26 @@ def _challenge_coverage(sim, profile):
 # ── Submit row ──
 
 def _submit_row(sim, profile, answer):
+    # Confidence bet
+    st.markdown("""
+    <p style="font-size:0.78rem; color:#9C9590; text-transform:uppercase; letter-spacing:0.08em; margin:16px 0 4px;">How confident are you?</p>
+    """, unsafe_allow_html=True)
+
+    confidence = st.select_slider(
+        "confidence", options=["Guessing", "Unsure", "Leaning", "Confident", "Certain"],
+        value="Leaning", key=f"confidence_{id(sim)}", label_visibility="collapsed",
+    )
+    conf_multipliers = {"Guessing": 0.5, "Unsure": 0.8, "Leaning": 1.0, "Confident": 1.5, "Certain": 2.5}
+    conf_risk = {"Guessing": "safe", "Unsure": "safe", "Leaning": "even", "Confident": "risky", "Certain": "all-in"}
+    multiplier = conf_multipliers[confidence]
+
+    conf_color = {"safe": "#2D8659", "even": "#6B6560", "risky": "#B8860B", "all-in": "#C44B4B"}[conf_risk[confidence]]
+    st.markdown(f"""
+    <p style="font-size:0.78rem; color:{conf_color}; margin:0 0 12px;">
+        {"Safe bet — less XP but no penalty" if confidence in ["Guessing", "Unsure"] else f"<strong>{multiplier}x</strong> XP if right — <strong>lose {int(multiplier * 10)} XP</strong> if wrong" if confidence in ["Confident", "Certain"] else "Even odds — standard XP"}
+    </p>
+    """, unsafe_allow_html=True)
+
     c1, c2 = st.columns([4, 1])
     with c1:
         submitted = st.button("Submit", type="primary", use_container_width=True)
@@ -796,12 +824,39 @@ def _submit_row(sim, profile, answer):
     if submitted and answer and answer.strip():
         with st.spinner("Evaluating..."):
             result = evaluate_answer(sim["skill"], sim, answer)
+
+            # Apply confidence multiplier to XP
+            base_xp = result.get("xp_earned", 0)
+            if result.get("correct"):
+                result["xp_earned"] = int(base_xp * multiplier)
+                result["confidence_bonus"] = f"+{multiplier}x"
+            else:
+                penalty = int(multiplier * 10) if confidence in ["Confident", "Certain"] else 0
+                result["xp_earned"] = max(0, base_xp - penalty)
+                result["confidence_penalty"] = f"-{penalty} xp" if penalty > 0 else None
+
+            result["confidence"] = confidence
             st.session_state.show_result = result
+
+            # Record
             profile.record_answer(sim["skill"], result.get("correct", False), sim.get("difficulty", "medium"), result.get("xp_earned", 0))
+
+            # Track confidence calibration
+            history = profile._data.setdefault("confidence_history", [])
+            history.append({"confidence": confidence, "correct": result.get("correct", False)})
+            profile._data["confidence_history"] = history[-50:]
+
+            # Campaign tracking
+            if sim.get("_campaign_week"):
+                campaign = get_campaign_state(profile._data)
+                record_campaign_answer(campaign, sim["_campaign_week"], result.get("correct", False))
+                profile._data["campaign"] = campaign
+
             if st.session_state.session_id:
                 profile.record_session_question(st.session_state.session_id, {
                     "skill": sim["skill"], "difficulty": sim.get("difficulty"),
-                    "correct": result.get("correct", False), "score": result.get("score", 0), "xp_earned": result.get("xp_earned", 0),
+                    "correct": result.get("correct", False), "score": result.get("score", 0),
+                    "xp_earned": result.get("xp_earned", 0), "confidence": confidence,
                 })
             profile.check_badges()
             profile.save()
@@ -820,11 +875,20 @@ def _render_result(sim, result, profile):
     label = "Correct" if correct else "Not quite"
     label_color = "#2D8659" if correct else "#C44B4B"
 
+    # Confidence outcome
+    conf = result.get("confidence", "")
+    conf_detail = ""
+    if correct and result.get("confidence_bonus"):
+        conf_detail = f'<span style="font-family:\'DM Mono\',monospace; font-size:0.78rem; color:#2D8659; background:#E8F5EE; padding:2px 8px; border-radius:3px;">{conf} {result["confidence_bonus"]}</span>'
+    elif not correct and result.get("confidence_penalty"):
+        conf_detail = f'<span style="font-family:\'DM Mono\',monospace; font-size:0.78rem; color:#C44B4B; background:#FCEAEA; padding:2px 8px; border-radius:3px;">{conf} {result["confidence_penalty"]}</span>'
+
     st.markdown(f"""
     <div style="background:{bg}; border-left:3px solid {border}; padding:16px 20px; border-radius:0 8px 8px 0; margin-bottom:20px;">
-        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;">
             <span style="font-size:1.1rem; font-weight:700; color:{label_color};">{label}</span>
             <span style="font-family:'DM Mono',monospace; font-size:0.82rem; color:{label_color};">+{xp} xp</span>
+            {conf_detail}
             <span style="font-family:'DM Mono',monospace; font-size:0.82rem; color:#6B6560; margin-left:auto;">Score: {score:.0%}</span>
         </div>
         <p style="margin:0 0 10px; color:#1A1714; line-height:1.65; font-size:0.9rem;">{result.get('feedback', '')}</p>
@@ -927,6 +991,229 @@ def _render_result(sim, result, profile):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Campaign
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _campaign_tab(profile):
+    campaign = get_campaign_state(profile._data)
+    week_num = campaign.get("current_week", 1)
+    week = get_current_week(campaign)
+
+    if campaign.get("completed"):
+        st.markdown("""
+        <div style="text-align:center; padding:40px 20px;">
+            <p style="font-family:'DM Mono',monospace; font-size:0.8rem; color:#9C9590; letter-spacing:0.1em; text-transform:uppercase;">Campaign Complete</p>
+            <h1 style="font-size:2rem; margin:8px 0;">NovaCare Health shipped.</h1>
+            <p style="color:#6B6560; font-size:1rem;">You caught the failures that mattered. The AI assistant launched safely to 50,000 patients.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Replay campaign", type="primary"):
+            profile._data["campaign"] = {}
+            profile.save()
+            st.rerun()
+        return
+
+    # Week progress bar
+    st.markdown(f"""
+    <div style="margin-bottom:24px;">
+        <div style="display:flex; gap:4px; margin-bottom:8px;">
+            {''.join(f'<div style="flex:1; height:6px; background:{"#2D8659" if i < week_num - 1 else "#C45D3E" if i == week_num - 1 else "#E5E0DB"}; border-radius:3px;"></div>' for i in range(6))}
+        </div>
+        <p style="font-family:'DM Mono',monospace; font-size:0.72rem; color:#9C9590;">Week {week_num} of 6 &mdash; {6 - week_num} weeks until launch</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Week header
+    st.markdown(f"""
+    <div style="margin-bottom:20px;">
+        <p style="font-family:'DM Mono',monospace; font-size:0.72rem; color:#C45D3E; letter-spacing:0.08em; text-transform:uppercase; margin:0 0 4px;">Week {week_num}</p>
+        <h2 style="margin:0 0 8px;">{week['title']}</h2>
+        <p style="color:#6B6560; line-height:1.7; margin:0 0 4px;">{week['narrative']}</p>
+        <p style="font-size:0.82rem; color:#9C9590;">Company: {week['company']} &mdash; Product: {week['product']}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Week score
+    scores = campaign.get("week_scores", {}).get(str(week_num), {"correct": 0, "total": 0})
+    total_challenges = len(week["challenges"])
+    done = scores["total"]
+    correct = scores["correct"]
+    needed = week["pass_requirement"]
+
+    st.markdown(f"""
+    <div style="background:#F2EFEB; padding:14px 18px; border-radius:8px; margin-bottom:20px;">
+        <div style="display:flex; gap:24px; align-items:center;">
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase;">Progress</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1.1rem; font-weight:600; margin-left:8px;">{done}/{total_challenges}</span>
+            </div>
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase;">Correct</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1.1rem; font-weight:600; color:#2D8659; margin-left:8px;">{correct}</span>
+            </div>
+            <div>
+                <span style="font-size:0.7rem; color:#9C9590; text-transform:uppercase;">Need to advance</span>
+                <span style="font-family:'DM Mono',monospace; font-size:1.1rem; font-weight:600; margin-left:8px;">{needed}</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Active challenge or generate next
+    sim = st.session_state.current_sim
+    if sim and sim.get("_campaign_week") == week_num:
+        _render_challenge(sim, profile)
+    elif done < total_challenges:
+        challenge_info = week["challenges"][min(done, total_challenges - 1)]
+        st.markdown(f"""
+        <div style="border:1px solid #E5E0DB; padding:14px 18px; border-radius:8px; margin-bottom:16px;">
+            <p style="font-size:0.82rem; color:#9C9590; margin:0 0 6px;">Challenge {done + 1} of {total_challenges}</p>
+            <p style="margin:0;"><strong>{SKILL_LABELS.get(challenge_info['skill'], '')}</strong> ({challenge_info['difficulty']})</p>
+            <p style="font-size:0.85rem; color:#6B6560; margin:4px 0 0;">{challenge_info.get('context', '')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Start challenge", type="primary"):
+            with st.spinner("Generating campaign challenge..."):
+                new_sim = generate_simulation(
+                    challenge_info["skill"], profile,
+                    product_type="chatbot",
+                    difficulty_override=challenge_info["difficulty"],
+                )
+                new_sim["_campaign_week"] = week_num
+                new_sim["_campaign_context"] = challenge_info.get("context", "")
+                st.session_state.current_sim = new_sim
+                st.session_state.show_result = None
+                if not st.session_state.session_id:
+                    st.session_state.session_id = profile.start_session()
+            st.rerun()
+    else:
+        # All challenges done this week
+        if can_advance(campaign):
+            st.markdown(f"""
+            <div style="background:#E8F5EE; border:1px solid #2D8659; border-radius:8px; padding:20px; text-align:center;">
+                <p style="font-size:1.1rem; font-weight:600; color:#2D8659; margin:0 0 4px;">Week {week_num} cleared!</p>
+                <p style="font-size:0.88rem; color:#6B6560; margin:0;">{correct}/{total_challenges} correct. You met the {needed} required.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Advance to next week", type="primary"):
+                advance_week(campaign)
+                profile._data["campaign"] = campaign
+                profile.save()
+                st.session_state.current_sim = None
+                st.session_state.show_result = None
+                st.rerun()
+        else:
+            st.markdown(f"""
+            <div style="background:#FCEAEA; border:1px solid #C44B4B; border-radius:8px; padding:20px; text-align:center;">
+                <p style="font-size:1.1rem; font-weight:600; color:#C44B4B; margin:0 0 4px;">Not enough correct answers</p>
+                <p style="font-size:0.88rem; color:#6B6560; margin:0;">You got {correct}/{total_challenges}. Need {needed} to advance. Review the feedback and try again.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Retry this week", type="primary"):
+                campaign["week_scores"][str(week_num)] = {"correct": 0, "total": 0}
+                profile._data["campaign"] = campaign
+                profile.save()
+                st.session_state.current_sim = None
+                st.session_state.show_result = None
+                st.rerun()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Daily Challenge
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _daily_tab(profile):
+    from datetime import datetime, timezone
+    import hashlib
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    last_daily = profile._data.get("last_daily_date")
+    daily_done = last_daily == today
+
+    # Use date as seed for consistent daily challenge
+    seed = int(hashlib.md5(today.encode()).hexdigest()[:8], 16)
+    daily_skill = SKILLS[seed % len(SKILLS)]
+    daily_diff = ["medium", "hard", "medium", "hard", "medium", "hard", "expert"][seed % 7]
+
+    # Daily streak
+    daily_streak = profile._data.get("daily_streak", 0)
+
+    st.markdown(f"""
+    <div style="text-align:center; padding:20px 0 24px;">
+        <p style="font-family:'DM Mono',monospace; font-size:0.72rem; color:#9C9590; letter-spacing:0.12em; text-transform:uppercase; margin:0 0 8px;">{today}</p>
+        <h2 style="margin:0 0 8px;">Daily Challenge</h2>
+        <p style="color:#6B6560; margin:0;">One challenge per day. Same for everyone. Build your daily streak.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Streak display
+    streak_color = "#C45D3E" if daily_streak >= 7 else "#B8860B" if daily_streak >= 3 else "#6B6560"
+    st.markdown(f"""
+    <div style="display:flex; justify-content:center; gap:32px; margin-bottom:24px;">
+        <div style="text-align:center;">
+            <p style="font-family:'DM Mono',monospace; font-size:2rem; font-weight:700; color:{streak_color}; margin:0;">{daily_streak}</p>
+            <p style="font-size:0.75rem; color:#9C9590; margin:0;">day streak</p>
+        </div>
+        <div style="text-align:center;">
+            <p style="font-family:'DM Mono',monospace; font-size:2rem; font-weight:700; color:#1A1714; margin:0;">{DIFF_LABELS.get(daily_diff, daily_diff)}</p>
+            <p style="font-size:0.75rem; color:#9C9590; margin:0;">difficulty</p>
+        </div>
+        <div style="text-align:center;">
+            <p style="font-family:'DM Mono',monospace; font-size:2rem; font-weight:700; color:#1A1714; margin:0;">50</p>
+            <p style="font-size:0.75rem; color:#9C9590; margin:0;">bonus xp</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if daily_done:
+        st.markdown(f"""
+        <div style="background:#E8F5EE; border-radius:8px; padding:24px; text-align:center;">
+            <p style="font-size:1.1rem; font-weight:600; color:#2D8659; margin:0 0 4px;">Today's challenge complete</p>
+            <p style="font-size:0.88rem; color:#6B6560; margin:0;">Come back tomorrow for a new one. Your streak is {daily_streak} days.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    st.markdown(f"""
+    <div style="border:1px solid #E5E0DB; border-radius:8px; padding:18px; text-align:center; margin-bottom:16px;">
+        <p style="font-size:0.88rem; margin:0;"><strong>{SKILL_LABELS[daily_skill]}</strong> &mdash; {SKILL_DESCRIPTIONS[daily_skill]}</p>
+        <p style="font-family:'DM Mono',monospace; font-size:0.78rem; color:#9C9590; margin:6px 0 0;">+50 bonus XP for completing the daily</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    sim = st.session_state.current_sim
+    if sim and sim.get("_daily"):
+        _render_challenge(sim, profile)
+
+        # Mark daily as done when result is shown
+        if st.session_state.show_result:
+            profile._data["last_daily_date"] = today
+            if last_daily:
+                from datetime import timedelta
+                yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+                if last_daily == yesterday:
+                    profile._data["daily_streak"] = daily_streak + 1
+                else:
+                    profile._data["daily_streak"] = 1
+            else:
+                profile._data["daily_streak"] = 1
+            # Daily completion bonus XP
+            profile._data["overall_xp"] = profile._data.get("overall_xp", 0) + 50
+            profile.save()
+    else:
+        if st.button("Start today's challenge", type="primary", use_container_width=True):
+            with st.spinner("Generating daily challenge..."):
+                new_sim = generate_simulation(daily_skill, profile, difficulty_override=daily_diff)
+                new_sim["_daily"] = True
+                st.session_state.current_sim = new_sim
+                st.session_state.show_result = None
+                if not st.session_state.session_id:
+                    st.session_state.session_id = profile.start_session()
+            st.rerun()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Progress
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -982,6 +1269,44 @@ def _progress_tab(profile):
             <span style="font-size:0.8rem; color:#9C9590; width:90px; text-align:right;">{accuracy}</span>
         </div>
         """, unsafe_allow_html=True)
+
+    # Confidence calibration
+    conf_history = profile._data.get("confidence_history", [])
+    if len(conf_history) >= 5:
+        st.markdown("### Confidence calibration")
+        st.markdown("<p style='font-size:0.85rem; color:#6B6560;'>Are you right when you say you're confident? Good calibration means your accuracy matches your confidence.</p>", unsafe_allow_html=True)
+
+        conf_levels = ["Guessing", "Unsure", "Leaning", "Confident", "Certain"]
+        for cl in conf_levels:
+            entries = [e for e in conf_history if e.get("confidence") == cl]
+            if entries:
+                correct = sum(1 for e in entries if e.get("correct"))
+                total = len(entries)
+                pct = correct / total
+                expected = {"Guessing": 0.3, "Unsure": 0.45, "Leaning": 0.6, "Confident": 0.75, "Certain": 0.9}[cl]
+
+                # Color: green if calibrated, red if over/under
+                if abs(pct - expected) < 0.15:
+                    cal_color = "#2D8659"
+                    cal_label = "well calibrated"
+                elif pct > expected:
+                    cal_color = "#2D8659"
+                    cal_label = "under-confident (good problem to have)"
+                else:
+                    cal_color = "#C44B4B"
+                    cal_label = "over-confident"
+
+                bar_w = max(int(pct * 100), 2)
+                st.markdown(f"""
+                <div style="display:flex; align-items:center; gap:12px; padding:6px 0; border-bottom:1px solid #F2EFEB;">
+                    <span style="width:80px; font-size:0.82rem; font-weight:500;">{cl}</span>
+                    <div style="flex:1; height:6px; background:#F2EFEB; border-radius:3px; overflow:hidden;">
+                        <div style="width:{bar_w}%; height:100%; background:{cal_color}; border-radius:3px;"></div>
+                    </div>
+                    <span style="font-family:'DM Mono',monospace; font-size:0.78rem; width:50px; text-align:right;">{pct:.0%}</span>
+                    <span style="font-size:0.72rem; color:#9C9590; width:120px;">{correct}/{total} — {cal_label}</span>
+                </div>
+                """, unsafe_allow_html=True)
 
     # Session history
     sessions = profile._data.get("sessions", [])

@@ -77,6 +77,10 @@ class UserProfile:
             "best_combo": 0,
             "session_correct": 0,  # current session running total
             "session_total": 0,
+            "campaign": {},  # campaign mode state
+            "confidence_history": [],  # last 50 confidence bets
+            "daily_streak": 0,
+            "last_daily_date": None,
         }
 
     def save(self):
